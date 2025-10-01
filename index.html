@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebGL Vectors: Lines, Direction, Translation & Scaling</title>
+  <style>
+    :root { font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    body { margin: 0; display: grid; grid-template-columns: 380px 1fr; height: 100vh; }
+    aside { padding: 16px 18px; border-right: 1px solid #e6e6e6; overflow: auto; }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    p { margin: 6px 0 10px; color: #444; line-height: 1.35; }
+    fieldset { border: 1px solid #ddd; border-radius: 10px; padding: 10px 12px; margin: 10px 0 14px; }
+    legend { padding: 0 6px; color: #333; font-weight: 600; }
+    label { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin: 8px 0; }
+    input[type="range"] { width: 200px; }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    canvas { width: 100%; height: 100%; display: block; }
+    .hint { font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+<aside>
+  <h1>How can vectors be used to define line segments, directions, and transformations </h1>
+
+
+  <fieldset>
+    <legend>Points A & B (define the line segment)</legend>
+    <label>A.x <span class="row"><input id="ax" type="range" min="-1" max="1" step="0.01" value="-0.5"><span id="axv" class="mono">-0.50</span></span></label>
+    <label>A.y <span class="row"><input id="ay" type="range" min="-1" max="1" step="0.01" value="-0.2"><span id="ayv" class="mono">-0.20</span></span></label>
+    <label>B.x <span class="row"><input id="bx" type="range" min="-1" max="1" step="0.01" value="0.6"><span id="bxv" class="mono">0.60</span></span></label>
+    <label>B.y <span class="row"><input id="by" type="range" min="-1" max="1" step="0.01" value="0.4"><span id="byv" class="mono">0.40</span></span></label>
+    <p class="hint">Line segment AB is drawn in bold. The vector \(\vec{v}=B-A\) points from A to B.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Direction Arrow (unit vector)</legend>
+    <label>Angle θ (deg)
+      <span class="row"><input id="theta" type="range" min="-180" max="180" step="1" value="30"><span id="thetav" class="mono">30°</span></span>
+    </label>
+    <label>Length
+      <span class="row"><input id="dirlen" type="range" min="0.05" max="0.9" step="0.01" value="0.45"><span id="dirlenv" class="mono">0.45</span></span>
+    </label>
+    <p class="hint">The arrow is anchored at the origin (0,0) to emphasize direction.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Transform the Triangle (model transform)</legend>
+    <label>Translate X
+      <span class="row"><input id="tx" type="range" min="-1" max="1" step="0.01" value="0.2"><span id="txv" class="mono">0.20</span></span>
+    </label>
+    <label>Translate Y
+      <span class="row"><input id="ty" type="range" min="-1" max="1" step="0.01" value="0.0"><span id="tyv" class="mono">0.00</span></span>
+    </label>
+    <label>Scale X
+      <span class="row"><input id="sx" type="range" min="-2" max="2" step="0.01" value="1.2"><span id="sxv" class="mono">1.20</span></span>
+    </label>
+    <label>Scale Y
+      <span class="row"><input id="sy" type="range" min="-2" max="2" step="0.01" value="0.8"><span id="syv" class="mono">0.80</span></span>
+    </label>
+    <p class="hint">Translation adds a vector: <span class="mono">p' = p + t</span>. Scaling multiplies component‑wise: <span class="mono">p' = S·p</span>.</p>
+  </fieldset>
+
+  <p class="hint">Tip: Negative scale flips the shape across an axis (a simple reflection).</p>
+</aside>
+
+<canvas id="gl" width="900" height="700" aria-label="WebGL canvas"></canvas>
+
+<script>
+  // --- Utilities -----------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  const sync = (id, fmt = (v)=>v) => {
+    const el = $(id), out = $(id+'v');
+    const update = () => out.textContent = fmt(el.value);
+    el.addEventListener('input', update); update();
+    return el;
+  };
+
+  // --- WebGL Setup --------------------------------------------------------
+  const gl = (() => {
+    const c = $('gl');
+    const ctx = c.getContext('webgl', { antialias: true, alpha: false });
+    if (!ctx) { alert('WebGL not supported'); }
+    return ctx;
+  })();
+
+  const vsSrc = `
+      attribute vec2 a_position;
+      uniform mat3 u_matrix;   // model transform (2D in homogeneous coords)
+      void main() {
+        vec3 p = u_matrix * vec3(a_position, 1.0);
+        gl_Position = vec4(p.xy, 0.0, 1.0);
+      }
+    `;
+
+  const fsSrc = `
+      precision mediump float;
+      uniform vec4 u_color;
+      void main() { gl_FragColor = u_color; }
+    `;
+
+  function createShader(type, src) {
+    const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(sh));
+    }
+    return sh;
+  }
+
+  function createProgram(vs, fs) {
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog));
+    }
+    return prog;
+  }
+
+  const program = createProgram(createShader(gl.VERTEX_SHADER, vsSrc), createShader(gl.FRAGMENT_SHADER, fsSrc));
+  gl.useProgram(program);
+
+  const a_position = gl.getAttribLocation(program, 'a_position');
+  const u_matrix   = gl.getUniformLocation(program, 'u_matrix');
+  const u_color    = gl.getUniformLocation(program, 'u_color');
+
+  const posBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.enableVertexAttribArray(a_position);
+  gl.vertexAttribPointer(a_position, 2, gl.FLOAT, false, 0, 0);
+
+  // --- Simple 2D mat3 helpers (column-major) ------------------------------
+  const I = () => [1,0,0, 0,1,0, 0,0,1];
+  const T = (tx,ty) => [1,0,0, 0,1,0, tx,ty,1];
+  const S = (sx,sy) => [sx,0,0, 0,sy,0, 0,0,1];
+  function mul(a,b){
+    // a*b: column-major 3x3
+    return [
+      a[0]*b[0]+a[3]*b[1]+a[6]*b[2],
+      a[1]*b[0]+a[4]*b[1]+a[7]*b[2],
+      a[2]*b[0]+a[5]*b[1]+a[8]*b[2],
+
+      a[0]*b[3]+a[3]*b[4]+a[6]*b[5],
+      a[1]*b[3]+a[4]*b[4]+a[7]*b[5],
+      a[2]*b[3]+a[5]*b[4]+a[8]*b[5],
+
+      a[0]*b[6]+a[3]*b[7]+a[6]*b[8],
+      a[1]*b[6]+a[4]*b[7]+a[7]*b[8],
+      a[2]*b[6]+a[5]*b[7]+a[8]*b[8]
+    ];
+  }
+
+  // --- Geometry builders --------------------------------------------------
+  function setVerts(data){ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW); }
+
+  function drawLines(vertices, color, matrix, lineWidth=1){
+    setVerts(vertices);
+    gl.uniformMatrix3fv(u_matrix, false, new Float32Array(matrix || I()));
+    gl.uniform4fv(u_color, color);
+    // Some platforms ignore lineWidth; the visual thickness comes mainly from color contrast.
+    gl.lineWidth(lineWidth);
+    gl.drawArrays(gl.LINES, 0, vertices.length/2);
+  }
+
+  function drawLineStrip(points, color, matrix){
+    setVerts(points);
+    gl.uniformMatrix3fv(u_matrix, false, new Float32Array(matrix || I()));
+    gl.uniform4fv(u_color, color);
+    gl.drawArrays(gl.LINE_STRIP, 0, points.length/2);
+  }
+
+  function drawTriangles(vertices, color, matrix){
+    setVerts(vertices);
+    gl.uniformMatrix3fv(u_matrix, false, new Float32Array(matrix || I()));
+    gl.uniform4fv(u_color, color);
+    gl.drawArrays(gl.TRIANGLES, 0, vertices.length/2);
+  }
+
+  // Arrow from p0 to p1 with a small triangular head
+  function arrow(p0, p1, head=0.04){
+    const [x0,y0] = p0, [x1,y1] = p1;
+    const vx = x1-x0, vy = y1-y0;
+    const len = Math.hypot(vx,vy) || 1e-6;
+    const ux = vx/len, uy = vy/len; // unit
+    const hx = x1 - ux*head*2.0;
+    const hy = y1 - uy*head*2.0;
+    // perpendicular
+    const px = -uy, py = ux;
+    const left  = [hx + px*head, hy + py*head];
+    const right = [hx - px*head, hy - py*head];
+    return {
+      shaft: [x0,y0, hx,hy],
+      head: [x1,y1, left[0],left[1], right[0],right[1]]
+    };
+  }
+
+  // A reference right-triangle in local model space
+  const tri = [
+    0.0, 0.0,
+    0.2, 0.0,
+    0.0, 0.2,
+  ];
+
+  // Axes grid lines for context
+  function drawAxes(){
+    // axes
+    drawLines([
+      -1,0, 1,0,  // x-axis
+      0,-1, 0,1   // y-axis
+    ], [0.75,0.75,0.75,1], I(), 1);
+    // unit ticks (faint)
+    const ticks = [];
+    for(let t=-1; t<=1; t+=0.1){
+      ticks.push(t,-0.01, t,0.01);
+      ticks.push(-0.01,t, 0.01,t);
+    }
+    drawLines(ticks, [0.9,0.9,0.9,1], I());
+  }
+
+  // --- UI elements --------------------------------------------------------
+  const ax=sync('ax',v=>(+v).toFixed(2));
+  const ay=sync('ay',v=>(+v).toFixed(2));
+  const bx=sync('bx',v=>(+v).toFixed(2));
+  const by=sync('by',v=>(+v).toFixed(2));
+  const theta=sync('theta',v=>v+"°");
+  const dirlen=sync('dirlen',v=>(+v).toFixed(2));
+  const tx=sync('tx',v=>(+v).toFixed(2));
+  const ty=sync('ty',v=>(+v).toFixed(2));
+  const sx=sync('sx',v=>(+v).toFixed(2));
+  const sy=sync('sy',v=>(+v).toFixed(2));
+
+  // --- Render loop --------------------------------------------------------
+  function render(){
+    gl.viewport(0,0,gl.canvas.width, gl.canvas.height);
+    gl.clearColor(1,1,1,1); gl.clear(gl.COLOR_BUFFER_BIT);
+
+    drawAxes();
+
+    // 1) Line segment AB & vector v = B - A
+    const A = [parseFloat(ax.value), parseFloat(ay.value)];
+    const B = [parseFloat(bx.value), parseFloat(by.value)];
+    const vec = [B[0]-A[0], B[1]-A[1]];
+
+    // Draw A and B as small crosses
+    const cross = (p) => [p[0]-0.01,p[1], p[0]+0.01,p[1], p[0],p[1]-0.01, p[0],p[1]+0.01];
+    drawLines(cross(A), [0.10,0.10,0.10,1], I());
+    drawLines(cross(B), [0.10,0.10,0.10,1], I());
+
+    // Line segment AB
+    drawLines([A[0],A[1], B[0],B[1]], [0.0,0.0,0.0,1], I(), 2);
+
+    // Vector arrow from A to B
+    const arrAB = arrow(A, B, 0.03);
+    drawLines(arrAB.shaft, [0.0,0.0,0.0,1], I(), 2);
+    drawTriangles(arrAB.head, [0.0,0.0,0.0,1], I());
+
+    // 2) Direction arrow at origin with chosen angle & length
+    const ang = parseFloat(theta.value) * Math.PI/180;
+    const L = parseFloat(dirlen.value);
+    const dirEnd = [Math.cos(ang)*L, Math.sin(ang)*L];
+    const arrDir = arrow([0,0], dirEnd, 0.03);
+    drawLines(arrDir.shaft, [0.20,0.35,0.95,1], I(), 2);
+    drawTriangles(arrDir.head, [0.20,0.35,0.95,1], I());
+
+    // 3) Transform a model-space triangle using T * S
+    const Tm = T(parseFloat(tx.value), parseFloat(ty.value));
+    const Sm = S(parseFloat(sx.value), parseFloat(sy.value));
+    const M = mul(Tm, Sm); // Note: scale first, then translate
+    drawTriangles(tri, [0.10,0.65,0.35,1], M);
+
+    // 4) Show the vector labels (debug, via line-strips)
+    // A -> A+v (i.e., B)
+    drawLineStrip([A[0],A[1], A[0]+vec[0],A[1]+vec[1]], [0.85,0.2,0.2,1], I());
+
+    requestAnimationFrame(render);
+  }
+
+  render();
+</script>
+</body>
+</html>
